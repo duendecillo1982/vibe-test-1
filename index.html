@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="api-base" content="" />
+    <title>Komesjes</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <h1>Komesjes</h1>
+        <p>Voeg toe wat op is en vink af in de supermarkt.</p>
+        <p id="sync-status" class="sync-status" aria-live="polite"></p>
+      </header>
+
+      <section class="panel">
+        <form id="add-item-form" class="add-item-form" autocomplete="off">
+          <div class="field">
+            <label for="item-name">Wat moet er gehaald worden?</label>
+            <input
+              id="item-name"
+              name="name"
+              type="text"
+              placeholder="Bijv. melk, brood, appels"
+              required
+              maxlength="80"
+            />
+          </div>
+
+          <div class="field field--split">
+            <div>
+              <label for="item-quantity">Aantal</label>
+              <input
+                id="item-quantity"
+                name="quantity"
+                type="text"
+                placeholder="Bijv. 2 of 1 pak"
+                maxlength="30"
+              />
+            </div>
+            <div>
+              <label for="item-added-by">Toegevoegd door</label>
+              <input
+                id="item-added-by"
+                name="addedBy"
+                type="text"
+                placeholder="Naam gezinslid"
+                maxlength="40"
+              />
+            </div>
+          </div>
+
+          <button type="submit" class="button button--primary">Toevoegen</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <h2>Boodschappenlijst</h2>
+          <div class="toolbar__actions">
+            <button id="clear-checked" class="button button--secondary" type="button">
+              Verwijder afgevinkt
+            </button>
+            <button id="clear-all" class="button button--danger" type="button">
+              Leeg lijstje
+            </button>
+          </div>
+        </div>
+
+        <ul id="shopping-list" class="shopping-list" aria-live="polite"></ul>
+        <p id="empty-state" class="empty-state">
+          De lijst is leeg. Voeg het eerste product toe.
+        </p>
+      </section>
+    </main>
+
+    <template id="item-template">
+      <li class="shopping-item">
+        <label class="shopping-item__main">
+          <input type="checkbox" class="shopping-item__checkbox" />
+          <span class="shopping-item__name"></span>
+        </label>
+        <div class="shopping-item__meta"></div>
+        <button type="button" class="shopping-item__delete" aria-label="Verwijder product">
+          Verwijder
+        </button>
+      </li>
+    </template>
+
+    <script src="./script.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "gezins-boodschappenlijst",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gedeelde boodschappenlijst voor gezinnen (Netlify + cloud database)",
+  "main": "netlify/functions/api.js",
+  "scripts": {
+    "start": "netlify dev"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
