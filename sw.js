@@ -1,5 +1,11 @@
-const STATIC_CACHE = "shopping-static-v3";
-const STATIC_ASSETS = ["./", "./index.html", "./styles.css", "./script.js"];
+const STATIC_CACHE = "shopping-static-v4"; 
+
+const STATIC_ASSETS = [
+  "./", 
+  "./index.html", 
+  "./styles.css?v=2",
+  "./script.js"
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(STATIC_CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
