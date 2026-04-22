@@ -210,7 +210,7 @@ async function ensureSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS shopping_items (
       id TEXT PRIMARY KEY,
-      family_id TEXT NOT NULL DEFAULT 'legacy',
+      family_id TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
       quantity TEXT NOT NULL DEFAULT '',
       added_by TEXT NOT NULL DEFAULT '',
@@ -219,15 +219,16 @@ async function ensureSchema() {
     )
   `);
   await pool.query(
-    "ALTER TABLE shopping_items ADD COLUMN IF NOT EXISTS family_id TEXT NOT NULL DEFAULT 'legacy'"
+    "ALTER TABLE shopping_items ADD COLUMN IF NOT EXISTS family_id TEXT NOT NULL DEFAULT ''"
+  );
+  await pool.query(
+    "ALTER TABLE shopping_items ALTER COLUMN family_id SET DEFAULT ''"
   );
   await pool.query(
     "CREATE INDEX IF NOT EXISTS shopping_items_family_created_idx ON shopping_items (family_id, created_at DESC)"
   );
-  await pool.query(
-    "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
-    ["legacy", "Bestaand gezin", hashPin("0000", "legacy"), Date.now()]
-  );
+  await pool.query("DELETE FROM shopping_sessions WHERE family_id = $1", ["legacy"]);
+  await pool.query("DELETE FROM shopping_families WHERE id = $1", ["legacy"]);
   await pool.query("CREATE INDEX IF NOT EXISTS shopping_sessions_family_idx ON shopping_sessions (family_id)");
   await pool.query("DELETE FROM shopping_sessions WHERE expires_at < $1", [Date.now()]);
 

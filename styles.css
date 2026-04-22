@@ -58,11 +58,6 @@ body {
   font-size: 0.92rem;
 }
 
-.auth-help--small {
-  margin-top: 0.75rem;
-  font-size: 0.82rem;
-}
-
 .auth-mode {
   display: flex;
   gap: 0.8rem;
