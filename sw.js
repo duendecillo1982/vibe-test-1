@@ -1,4 +1,4 @@
-const STATIC_CACHE = "shopping-static-v2";
+const STATIC_CACHE = "shopping-static-v3";
 const STATIC_ASSETS = ["./", "./index.html", "./styles.css", "./script.js"];
 
 self.addEventListener("install", (event) => {
