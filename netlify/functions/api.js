@@ -250,8 +250,11 @@ function sanitize(value, maxLength) {
 }
 
 function getApiPath(rawPath) {
-  const withoutPrefix = rawPath.replace(/^\/api/, "");
-  return withoutPrefix || "/items";
+  const normalized = String(rawPath || "").trim();
+  const withoutFunctionPrefix = normalized.replace(/^\/\.netlify\/functions\/api/, "");
+  const withoutApiPrefix = withoutFunctionPrefix.replace(/^\/api/, "");
+  const path = withoutApiPrefix || "/items";
+  return path.startsWith("/") ? path : `/${path}`;
 }
 
 async function authenticateSession(headers) {
