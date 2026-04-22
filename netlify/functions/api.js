@@ -30,9 +30,50 @@ exports.handler = async (event) => {
     const method = event.httpMethod || "GET";
     const path = getApiPath(event.path || "/api/items");
 
+    if (method === "POST" && path === "/session") {
+      const body = parseBody(event.body);
+      const familyName = sanitize(body.familyName, 80);
+      const pin = sanitize(body.pin, 20);
+      const familyId = normalizeFamilyId(familyName);
+
+      if (!familyId) {
+        return json(400, { error: "Gezinsnaam is verplicht" });
+      }
+      if (!isValidPin(pin)) {
+        return json(400, { error: "Pincode moet uit 4 tot 8 cijfers bestaan" });
+      }
+
+      const existing = await pool.query(
+        "SELECT id, name, pin_hash FROM shopping_families WHERE id = $1 LIMIT 1",
+        [familyId]
+      );
+      const pinHash = hashPin(pin, familyId);
+
+      if (existing.rowCount === 0) {
+        await pool.query(
+          "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4)",
+          [familyId, familyName, pinHash, Date.now()]
+        );
+        return json(200, { familyId, familyName, created: true });
+      }
+
+      const family = existing.rows[0];
+      if (family.pin_hash !== pinHash) {
+        return json(401, { error: "Onjuiste pincode" });
+      }
+
+      return json(200, { familyId: family.id, familyName: family.name, created: false });
+    }
+
+    const auth = await authenticateFamily(event.headers || {});
+    if (!auth.ok) {
+      return json(auth.statusCode, { error: auth.error });
+    }
+
     if (method === "GET" && path === "/items") {
       const result = await pool.query(
-        "SELECT id, name, quantity, added_by, checked, created_at FROM shopping_items ORDER BY checked ASC, created_at DESC"
+        "SELECT id, name, quantity, added_by, checked, created_at FROM shopping_items WHERE family_id = $1 ORDER BY checked ASC, created_at DESC",
+        [auth.familyId]
       );
       return json(200, {
         items: result.rows.map(toClientItem),
@@ -51,19 +92,21 @@ exports.handler = async (event) => {
       }
 
       await pool.query(
-        "INSERT INTO shopping_items (id, name, quantity, added_by, checked, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
-        [providedId || crypto.randomUUID(), name, quantity, addedBy, false, Date.now()]
+        "INSERT INTO shopping_items (id, family_id, name, quantity, added_by, checked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING",
+        [providedId || crypto.randomUUID(), auth.familyId, name, quantity, addedBy, false, Date.now()]
       );
       return json(201, { ok: true });
     }
 
     if (method === "DELETE" && path === "/items") {
-      await pool.query("DELETE FROM shopping_items");
+      await pool.query("DELETE FROM shopping_items WHERE family_id = $1", [auth.familyId]);
       return json(200, { ok: true });
     }
 
     if (method === "DELETE" && path === "/items/checked") {
-      await pool.query("DELETE FROM shopping_items WHERE checked = TRUE");
+      await pool.query("DELETE FROM shopping_items WHERE family_id = $1 AND checked = TRUE", [
+        auth.familyId,
+      ]);
       return json(200, { ok: true });
     }
 
@@ -79,10 +122,10 @@ exports.handler = async (event) => {
           return json(400, { error: "checked moet true of false zijn" });
         }
 
-        const result = await pool.query("UPDATE shopping_items SET checked = $1 WHERE id = $2", [
-          body.checked,
-          itemId,
-        ]);
+        const result = await pool.query(
+          "UPDATE shopping_items SET checked = $1 WHERE id = $2 AND family_id = $3",
+          [body.checked, itemId, auth.familyId]
+        );
         if (result.rowCount === 0) {
           return json(404, { error: "Product niet gevonden" });
         }
@@ -90,7 +133,10 @@ exports.handler = async (event) => {
       }
 
       if (method === "DELETE") {
-        await pool.query("DELETE FROM shopping_items WHERE id = $1", [itemId]);
+        await pool.query("DELETE FROM shopping_items WHERE id = $1 AND family_id = $2", [
+          itemId,
+          auth.familyId,
+        ]);
         return json(200, { ok: true });
       }
     }
@@ -114,8 +160,18 @@ async function ensureSchema() {
   }
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopping_families (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      pin_hash TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS shopping_items (
       id TEXT PRIMARY KEY,
+      family_id TEXT NOT NULL DEFAULT 'legacy',
       name TEXT NOT NULL,
       quantity TEXT NOT NULL DEFAULT '',
       added_by TEXT NOT NULL DEFAULT '',
@@ -123,6 +179,16 @@ async function ensureSchema() {
       created_at BIGINT NOT NULL
     )
   `);
+  await pool.query(
+    "ALTER TABLE shopping_items ADD COLUMN IF NOT EXISTS family_id TEXT NOT NULL DEFAULT 'legacy'"
+  );
+  await pool.query(
+    "CREATE INDEX IF NOT EXISTS shopping_items_family_created_idx ON shopping_items (family_id, created_at DESC)"
+  );
+  await pool.query(
+    "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
+    ["legacy", "Bestaand gezin", hashPin("0000", "legacy"), Date.now()]
+  );
 
   schemaReady = true;
 }
@@ -145,6 +211,47 @@ function sanitize(value, maxLength) {
 function getApiPath(rawPath) {
   const withoutPrefix = rawPath.replace(/^\/api/, "");
   return withoutPrefix || "/items";
+}
+
+async function authenticateFamily(headers) {
+  const familyId = sanitize(headers["x-family-id"] || headers["X-Family-Id"], 80);
+  const pin = sanitize(headers["x-family-pin"] || headers["X-Family-Pin"], 20);
+  if (!familyId || !pin) {
+    return { ok: false, statusCode: 401, error: "Geen geldige gezinstoegang" };
+  }
+
+  const result = await pool.query(
+    "SELECT id, pin_hash FROM shopping_families WHERE id = $1 LIMIT 1",
+    [familyId]
+  );
+  if (result.rowCount === 0) {
+    return { ok: false, statusCode: 401, error: "Onbekend gezin" };
+  }
+
+  const family = result.rows[0];
+  if (family.pin_hash !== hashPin(pin, family.id)) {
+    return { ok: false, statusCode: 401, error: "Onjuiste pincode" };
+  }
+
+  return { ok: true, familyId: family.id };
+}
+
+function normalizeFamilyId(input) {
+  return String(input || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[-\s]+/g, "-")
+    .slice(0, 64);
+}
+
+function isValidPin(pin) {
+  return /^\d{4,8}$/.test(pin);
+}
+
+function hashPin(pin, familyId) {
+  return crypto.scryptSync(pin, familyId, 32).toString("hex");
 }
 
 function toClientItem(row) {

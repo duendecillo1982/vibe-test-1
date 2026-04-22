@@ -1,29 +1,63 @@
 const form = document.querySelector("#add-item-form");
+const familyForm = document.querySelector("#family-form");
 const list = document.querySelector("#shopping-list");
 const emptyState = document.querySelector("#empty-state");
 const template = document.querySelector("#item-template");
 const clearCheckedButton = document.querySelector("#clear-checked");
 const clearAllButton = document.querySelector("#clear-all");
+const switchFamilyButton = document.querySelector("#switch-family");
 const syncStatus = document.querySelector("#sync-status");
+const authPanel = document.querySelector("#auth-panel");
+const listPanel = document.querySelector("#list-panel");
+const itemsPanel = document.querySelector("#items-panel");
+const listTitle = document.querySelector("#list-title");
 const apiBaseMeta = document.querySelector('meta[name="api-base"]');
 const API_BASE = (apiBaseMeta?.content || "").trim().replace(/\/+$/, "");
-const ITEMS_STORAGE_KEY = "shopping-items-cache-v1";
-const PENDING_OPS_STORAGE_KEY = "shopping-pending-ops-v1";
-const LAST_SYNC_STORAGE_KEY = "shopping-last-sync-v1";
+const SESSION_STORAGE_KEY = "shopping-family-session-v1";
 
-let items = loadItemsFromStorage();
-let pendingOps = loadPendingOpsFromStorage();
+let session = loadSession();
+let items = [];
+let pendingOps = [];
 let refreshTimerId = null;
 let syncError = "";
-let lastSyncedAt = loadLastSyncedAtFromStorage();
+let lastSyncedAt = null;
 let syncInProgress = false;
 
 bootstrap();
-renderItems();
-renderSyncStatus();
+
+familyForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(familyForm);
+  const familyName = String(formData.get("familyName") || "").trim();
+  const pin = String(formData.get("pin") || "").trim();
+
+  if (!familyName || !/^\d{4,8}$/.test(pin)) {
+    setSyncError("Vul een gezinsnaam en pincode van 4-8 cijfers in.");
+    return;
+  }
+
+  try {
+    const result = await request("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ familyName, pin }),
+      includeAuth: false,
+    });
+    session = { familyId: result.familyId, familyName: result.familyName, pin };
+    saveSession();
+    resetStateForActiveFamily();
+    showApp();
+    await refreshItems();
+    startAutoRefresh();
+  } catch (error) {
+    setSyncError(error);
+  }
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!session) {
+    return;
+  }
 
   const formData = new FormData(form);
   const name = String(formData.get("name") || "").trim();
@@ -64,19 +98,13 @@ form.addEventListener("submit", async (event) => {
 
 list.addEventListener("change", async (event) => {
   const checkbox = event.target;
-  if (!(checkbox instanceof HTMLInputElement)) {
+  if (!(checkbox instanceof HTMLInputElement) || !checkbox.matches(".shopping-item__checkbox")) {
     return;
   }
-
-  if (!checkbox.matches(".shopping-item__checkbox")) {
-    return;
-  }
-
   const itemElement = checkbox.closest(".shopping-item");
   if (!itemElement) {
     return;
   }
-
   const itemId = itemElement.dataset.itemId;
   items = items.map((item) => (item.id === itemId ? { ...item, checked: checkbox.checked } : item));
   queueOperation({ type: "setChecked", id: itemId, checked: checkbox.checked });
@@ -88,19 +116,13 @@ list.addEventListener("change", async (event) => {
 
 list.addEventListener("click", async (event) => {
   const button = event.target;
-  if (!(button instanceof HTMLButtonElement)) {
+  if (!(button instanceof HTMLButtonElement) || !button.matches(".shopping-item__delete")) {
     return;
   }
-
-  if (!button.matches(".shopping-item__delete")) {
-    return;
-  }
-
   const itemElement = button.closest(".shopping-item");
   if (!itemElement) {
     return;
   }
-
   const itemId = itemElement.dataset.itemId;
   items = items.filter((item) => item.id !== itemId);
   queueOperation({ type: "delete", id: itemId });
@@ -123,12 +145,10 @@ clearAllButton.addEventListener("click", async () => {
   if (items.length === 0) {
     return;
   }
-
   const confirmed = window.confirm("Weet je zeker dat je het hele lijstje wilt leegmaken?");
   if (!confirmed) {
     return;
   }
-
   items = [];
   queueOperation({ type: "clearAll" });
   persistState();
@@ -137,19 +157,27 @@ clearAllButton.addEventListener("click", async () => {
   triggerSyncInBackground();
 });
 
-async function bootstrap() {
-  if (window.location.protocol === "file:") {
-    setSyncError(
-      "Open de app via Netlify (of lokaal via `netlify dev`), niet direct als bestand."
-    );
+switchFamilyButton.addEventListener("click", () => {
+  const confirmed = window.confirm("Wisselen van gezin op dit toestel?");
+  if (!confirmed) {
     return;
   }
+  session = null;
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+  stopAutoRefresh();
+  items = [];
+  pendingOps = [];
+  lastSyncedAt = null;
+  syncError = "";
+  showAuth();
+  renderItems();
+  renderSyncStatus();
+});
 
-  try {
-    await refreshItems();
-    startAutoRefresh();
-  } catch (error) {
-    setSyncError(error);
+async function bootstrap() {
+  if (window.location.protocol === "file:") {
+    setSyncError("Open de app via Netlify (of lokaal via `netlify dev`), niet direct als bestand.");
+    return;
   }
 
   window.addEventListener("online", () => {
@@ -162,18 +190,58 @@ async function bootstrap() {
     renderSyncStatus();
   });
 
-  if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
-    navigator.serviceWorker.register("./sw.js").catch(() => {
-      // Service worker is optional; app keeps working without it.
-    });
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
+
+  if (!session) {
+    showAuth();
+    renderSyncStatus();
+    return;
+  }
+
+  resetStateForActiveFamily();
+  showApp();
+  renderItems();
+  renderSyncStatus();
+
+  try {
+    await request("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ familyName: session.familyName, pin: session.pin }),
+      includeAuth: false,
+    });
+    await refreshItems();
+    startAutoRefresh();
+  } catch (error) {
+    setSyncError(error);
+  }
+}
+
+function showAuth() {
+  authPanel.hidden = false;
+  listPanel.hidden = true;
+  itemsPanel.hidden = true;
+}
+
+function showApp() {
+  authPanel.hidden = true;
+  listPanel.hidden = false;
+  itemsPanel.hidden = false;
+  listTitle.textContent = `Boodschappenlijst - ${session?.familyName || ""}`;
+}
+
+function resetStateForActiveFamily() {
+  items = loadItemsFromStorage();
+  pendingOps = loadPendingOpsFromStorage();
+  lastSyncedAt = loadLastSyncedAtFromStorage();
+  syncError = "";
 }
 
 function startAutoRefresh() {
   if (refreshTimerId !== null) {
     return;
   }
-
   refreshTimerId = window.setInterval(async () => {
     try {
       await refreshItems();
@@ -183,7 +251,18 @@ function startAutoRefresh() {
   }, 3000);
 }
 
+function stopAutoRefresh() {
+  if (refreshTimerId === null) {
+    return;
+  }
+  window.clearInterval(refreshTimerId);
+  refreshTimerId = null;
+}
+
 async function refreshItems() {
+  if (!session) {
+    return;
+  }
   await flushPendingOps();
   const result = await request("/api/items");
   items = Array.isArray(result.items) ? result.items : [];
@@ -196,19 +275,16 @@ async function refreshItems() {
 
 function renderItems() {
   list.innerHTML = "";
-
   const sortedItems = [...items].sort((a, b) => {
     if (a.checked !== b.checked) {
       return a.checked ? 1 : -1;
     }
     return b.createdAt - a.createdAt;
   });
-
   for (const item of sortedItems) {
     const node = createItemNode(item);
     list.append(node);
   }
-
   emptyState.hidden = items.length > 0;
 }
 
@@ -218,57 +294,50 @@ function createItemNode(item) {
   const checkbox = fragment.querySelector(".shopping-item__checkbox");
   const name = fragment.querySelector(".shopping-item__name");
   const meta = fragment.querySelector(".shopping-item__meta");
-
   itemElement.dataset.itemId = item.id;
   checkbox.checked = item.checked;
   name.textContent = item.name;
   meta.textContent = getMetaText(item);
   itemElement.classList.toggle("shopping-item--checked", item.checked);
-
   return fragment;
 }
 
 function getMetaText(item) {
   const details = [];
-  if (item.quantity) {
-    details.push(`Aantal: ${item.quantity}`);
-  }
-  if (item.addedBy) {
-    details.push(`Toegevoegd door: ${item.addedBy}`);
-  }
-
+  if (item.quantity) details.push(`Aantal: ${item.quantity}`);
+  if (item.addedBy) details.push(`Toegevoegd door: ${item.addedBy}`);
   return details.join(" • ") || "Geen extra details";
 }
 
 function renderSyncStatus() {
+  if (!session) {
+    syncStatus.textContent = "Kies je gezin om de lijst te openen.";
+    syncStatus.classList.remove("sync-status--error", "sync-status--warning");
+    return;
+  }
   if (syncError) {
     syncStatus.textContent = syncError;
     syncStatus.classList.add("sync-status--error");
     syncStatus.classList.remove("sync-status--warning");
     return;
   }
-
   const lastSyncText = lastSyncedAt
     ? `Laatst gesynchroniseerd om ${new Date(lastSyncedAt).toLocaleTimeString("nl-NL")}`
     : "Nog niet gesynchroniseerd";
-
   if (!navigator.onLine) {
     syncStatus.textContent = `Geen internetverbinding • Je werkt met lokaal opgeslagen gegevens (${lastSyncText}). Gegevens kunnen verouderd zijn.`;
     syncStatus.classList.add("sync-status--warning");
     syncStatus.classList.remove("sync-status--error");
     return;
   }
-
   if (pendingOps.length > 0) {
     syncStatus.textContent = `Verbinding actief • ${pendingOps.length} wijziging(en) wachten op synchronisatie (${lastSyncText}).`;
     syncStatus.classList.add("sync-status--warning");
     syncStatus.classList.remove("sync-status--error");
     return;
   }
-
   syncStatus.textContent = `Synchronisatie actief • ${lastSyncText}`;
-  syncStatus.classList.remove("sync-status--error");
-  syncStatus.classList.remove("sync-status--warning");
+  syncStatus.classList.remove("sync-status--error", "sync-status--warning");
 }
 
 function setSyncError(error) {
@@ -284,6 +353,7 @@ async function request(url, options = {}) {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...(options.includeAuth === false ? {} : getAuthHeaders()),
         ...(options.headers || {}),
       },
     });
@@ -293,19 +363,21 @@ async function request(url, options = {}) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    if (response.status === 404 && url.startsWith("/api/")) {
-      throw new Error(
-        "API endpoint niet gevonden. Op Netlify heb je een losse backend nodig en moet api-base daarnaar verwijzen."
-      );
-    }
     const message =
-      payload && typeof payload.error === "string"
-        ? payload.error
-        : `Serverfout (${response.status})`;
+      payload && typeof payload.error === "string" ? payload.error : `Serverfout (${response.status})`;
     throw new Error(message);
   }
-
   return payload ?? {};
+}
+
+function getAuthHeaders() {
+  if (!session) {
+    return {};
+  }
+  return {
+    "X-Family-Id": session.familyId,
+    "X-Family-Pin": session.pin,
+  };
 }
 
 function queueOperation(operation) {
@@ -313,7 +385,7 @@ function queueOperation(operation) {
 }
 
 async function triggerSyncInBackground() {
-  if (!navigator.onLine) {
+  if (!session || !navigator.onLine) {
     return;
   }
   try {
@@ -324,10 +396,9 @@ async function triggerSyncInBackground() {
 }
 
 async function flushPendingOps() {
-  if (!navigator.onLine || pendingOps.length === 0 || syncInProgress) {
+  if (!session || !navigator.onLine || pendingOps.length === 0 || syncInProgress) {
     return;
   }
-
   syncInProgress = true;
   try {
     const remaining = [];
@@ -351,10 +422,7 @@ async function flushPendingOps() {
 
 async function sendOperation(operation) {
   if (operation.type === "add") {
-    await request("/api/items", {
-      method: "POST",
-      body: JSON.stringify(operation.item),
-    });
+    await request("/api/items", { method: "POST", body: JSON.stringify(operation.item) });
     return;
   }
   if (operation.type === "setChecked") {
@@ -381,36 +449,52 @@ function isNetworkError(error) {
   return error instanceof Error && error.message === "Geen verbinding met de server.";
 }
 
+function saveSession() {
+  if (session) {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  }
+}
+
+function loadSession() {
+  return parseStoredJson(SESSION_STORAGE_KEY, null);
+}
+
 function persistState() {
-  localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(items));
-  localStorage.setItem(PENDING_OPS_STORAGE_KEY, JSON.stringify(pendingOps));
+  if (!session) {
+    return;
+  }
+  localStorage.setItem(getStorageKey("items"), JSON.stringify(items));
+  localStorage.setItem(getStorageKey("pending"), JSON.stringify(pendingOps));
   if (lastSyncedAt) {
-    localStorage.setItem(LAST_SYNC_STORAGE_KEY, String(lastSyncedAt));
+    localStorage.setItem(getStorageKey("last-sync"), String(lastSyncedAt));
   }
 }
 
 function loadItemsFromStorage() {
-  return parseStoredJson(ITEMS_STORAGE_KEY, []);
+  if (!session) return [];
+  return parseStoredJson(getStorageKey("items"), []);
 }
 
 function loadPendingOpsFromStorage() {
-  return parseStoredJson(PENDING_OPS_STORAGE_KEY, []);
+  if (!session) return [];
+  return parseStoredJson(getStorageKey("pending"), []);
 }
 
 function loadLastSyncedAtFromStorage() {
-  const value = localStorage.getItem(LAST_SYNC_STORAGE_KEY);
-  if (!value) {
-    return null;
-  }
+  if (!session) return null;
+  const value = localStorage.getItem(getStorageKey("last-sync"));
+  if (!value) return null;
   const numericValue = Number(value);
   return Number.isFinite(numericValue) ? numericValue : null;
 }
 
+function getStorageKey(type) {
+  return `shopping-${session.familyId}-${type}-v1`;
+}
+
 function parseStoredJson(key, fallback) {
   const raw = localStorage.getItem(key);
-  if (!raw) {
-    return fallback;
-  }
+  if (!raw) return fallback;
   try {
     return JSON.parse(raw);
   } catch {

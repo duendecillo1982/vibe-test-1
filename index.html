@@ -15,7 +15,41 @@
         <p id="sync-status" class="sync-status" aria-live="polite"></p>
       </header>
 
-      <section class="panel">
+      <section id="auth-panel" class="panel">
+        <h2>Gezin openen</h2>
+        <p class="auth-help">
+          Kies je gezinsnaam en pincode. Bij volgend bezoek opent deze lijst automatisch op dit toestel.
+        </p>
+        <form id="family-form" class="add-item-form" autocomplete="off">
+          <div class="field">
+            <label for="family-name">Gezinsnaam</label>
+            <input
+              id="family-name"
+              name="familyName"
+              type="text"
+              placeholder="Bijv. Familie Peeters"
+              required
+              maxlength="80"
+            />
+          </div>
+          <div class="field">
+            <label for="family-pin">Pincode (4-8 cijfers)</label>
+            <input
+              id="family-pin"
+              name="pin"
+              type="password"
+              inputmode="numeric"
+              pattern="[0-9]{4,8}"
+              placeholder="Bijv. 1234"
+              required
+              maxlength="8"
+            />
+          </div>
+          <button type="submit" class="button button--primary">Lijst openen</button>
+        </form>
+      </section>
+
+      <section id="list-panel" class="panel" hidden>
         <form id="add-item-form" class="add-item-form" autocomplete="off">
           <div class="field">
             <label for="item-name">Wat moet er gehaald worden?</label>
@@ -56,10 +90,13 @@
         </form>
       </section>
 
-      <section class="panel">
+      <section id="items-panel" class="panel" hidden>
         <div class="toolbar">
-          <h2>Boodschappenlijst</h2>
+          <h2 id="list-title">Boodschappenlijst</h2>
           <div class="toolbar__actions">
+            <button id="switch-family" class="button button--secondary" type="button">
+              Wissel gezin
+            </button>
             <button id="clear-checked" class="button button--secondary" type="button">
               Verwijder afgevinkt
             </button>

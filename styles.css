@@ -52,6 +52,12 @@ body {
   color: #975a16;
 }
 
+.auth-help {
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
