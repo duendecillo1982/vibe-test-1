@@ -311,6 +311,7 @@ input[type="password"]:focus-visible,
   display: block; /* Voorkomt witruimte onder de SVG */
   fill: currentColor;
   flex-shrink: 0; /* Voorkomt dat de SVG vervormt */
+  pointer-events: none;
 }
 
 .shopping-item__delete:hover {
