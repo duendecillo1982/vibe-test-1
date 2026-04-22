@@ -230,17 +230,20 @@ input[type="password"]:focus-visible,
   padding: 0;
 }
 
+/* 1. De container van het hele item */
 .shopping-item {
   border: 1px solid rgba(133, 151, 178, 0.28);
   border-radius: 13px;
-  padding: 0.7rem 0.8rem;
+  padding: 0.8rem;
   background: var(--surface-strong);
   display: grid;
-  /* Drie kolommen: auto (checkbox), 1fr (naam vult op), auto (vuilbak) */
+  /* Kolom 1: checkbox, Kolom 2: tekst, Kolom 3: vuilbak */
   grid-template-columns: auto 1fr auto; 
   align-items: center;
-  gap: 0.2rem 0.8rem;
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  gap: 0.2rem 1rem;
+  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden; /* Zorgt dat niets uit het vakje puilt */
 }
 
 .shopping-item:hover {
@@ -252,12 +255,13 @@ input[type="password"]:focus-visible,
   margin-top: 0.65rem;
 }
 
+/* 2. De tekst en checkbox (kolom 1 & 2) */
 .shopping-item__main {
-  margin: 0;
-  display: inline-flex;
+  grid-column: 1 / 3;
+  display: flex;
   align-items: center;
   gap: 0.7rem;
-  grid-column: 1 / 3; /* Neemt kolom 1 en 2 in */
+  margin: 0;
 }
 
 .shopping-item__checkbox {
@@ -270,34 +274,43 @@ input[type="password"]:focus-visible,
   font-weight: 540;
 }
 
+/* 3. De meta informatie (onder de naam) */
 .shopping-item__meta {
+  grid-column: 2 / 3;
+  font-size: 0.85rem;
   color: var(--muted);
-  font-size: 0.82rem;
-  grid-column: 2 / 3; /* Begint onder de naam, niet onder de checkbox */
-  margin-top: -0.2rem;
 }
 
+/* 4. De vuilbak-knop (Harde fix) */
 .shopping-item__delete {
   grid-column: 3;
-  grid-row: 1 / 3; /* Zorgt dat hij verticaal gecentreerd blijft naast naam + meta */
-  border: 1px solid rgba(149, 160, 178, 0.3);
-  background: #fff;
-  color: #5d6c80;
-  width: 1.8rem;  /* Iets kleiner gemaakt */
-  height: 1.8rem; /* Iets kleiner gemaakt */
-  border-radius: 8px; /* Iets minder rond voor modernere look */
-  display: inline-flex;
+  grid-row: 1 / 3; /* Staat gecentreerd naast de twee regels tekst */
+  
+  /* Dwing de grootte af */
+  width: 32px !important; 
+  height: 32px !important;
+  min-width: 32px;
+  min-height: 32px;
+  
+  padding: 0;
+  display: flex;
   align-items: center;
   justify-content: center;
+  
+  background: #fff;
+  border: 1px solid rgba(149, 160, 178, 0.3);
+  border-radius: 8px;
   cursor: pointer;
-  transition: all 0.14s ease;
-  padding: 0;
+  color: #5d6c80;
 }
 
+/* 5. Het icoontje zelf (Harde fix) */
 .shopping-item__delete svg {
-  width: 0.9rem; /* Icoon zelf ook iets kleiner */
-  height: 0.9rem;
+  width: 18px !important;
+  height: 18px !important;
+  display: block; /* Voorkomt witruimte onder de SVG */
   fill: currentColor;
+  flex-shrink: 0; /* Voorkomt dat de SVG vervormt */
 }
 
 .shopping-item__delete:hover {
