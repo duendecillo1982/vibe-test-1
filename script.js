@@ -27,6 +27,7 @@ let syncInProgress = false;
 
 bootstrap();
 bindAuthModeUi();
+stripSensitiveParamsFromUrl();
 
 familyForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -522,6 +523,9 @@ function createId() {
 }
 
 function bindAuthModeUi() {
+  if (!familyForm) {
+    return;
+  }
   familyForm.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement) || target.name !== "authMode") {
@@ -533,8 +537,12 @@ function bindAuthModeUi() {
 }
 
 function updateAuthModeUi(isRegisterMode) {
-  confirmPinField.hidden = !isRegisterMode;
-  familySubmitButton.textContent = isRegisterMode ? "Gezin aanmaken" : "Inloggen";
+  if (confirmPinField) {
+    confirmPinField.hidden = !isRegisterMode;
+  }
+  if (familySubmitButton) {
+    familySubmitButton.textContent = isRegisterMode ? "Gezin aanmaken" : "Inloggen";
+  }
 }
 
 function clearSessionAndReturnToAuth() {
@@ -548,4 +556,18 @@ function clearSessionAndReturnToAuth() {
   showAuth();
   renderItems();
   renderSyncStatus();
+}
+
+function stripSensitiveParamsFromUrl() {
+  const url = new URL(window.location.href);
+  const hadSensitiveParams =
+    url.searchParams.has("pin") ||
+    url.searchParams.has("pinConfirm") ||
+    url.searchParams.has("familyName") ||
+    url.searchParams.has("authMode");
+  if (!hadSensitiveParams) {
+    return;
+  }
+  url.search = "";
+  window.history.replaceState({}, "", url.toString());
 }
