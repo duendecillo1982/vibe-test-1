@@ -25,7 +25,8 @@ Na deploy werkt alles direct via dezelfde Netlify-URL.
 ## Functies
 
 - Meerdere gezinnen met gescheiden lijsten via gezinsnaam + pincode.
-- Per toestel blijft het gekozen gezin onthouden, zodat de juiste lijst direct opent.
+- Startscherm met keuze tussen inloggen of nieuw gezin aanmaken.
+- Per toestel blijft een veilige sessie-token bewaard, zodat de juiste lijst direct opent zonder pincode in URL.
 - Product toevoegen met naam, optioneel aantal en naam van gezinslid.
 - Producten worden opgeslagen in cloud Postgres.
 - In de lijst staan niet-afgevinkte producten automatisch bovenaan.

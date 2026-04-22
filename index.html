@@ -18,9 +18,19 @@
       <section id="auth-panel" class="panel">
         <h2>Gezin openen</h2>
         <p class="auth-help">
-          Kies je gezinsnaam en pincode. Bij volgend bezoek opent deze lijst automatisch op dit toestel.
+          Kies of je wil inloggen of een nieuw gezin wil aanmaken. Dit toestel onthoudt daarna veilig je sessie.
         </p>
         <form id="family-form" class="add-item-form" autocomplete="off">
+          <div class="auth-mode" role="radiogroup" aria-label="Toegangstype">
+            <label class="auth-mode__option">
+              <input type="radio" name="authMode" value="login" checked />
+              <span>Inloggen</span>
+            </label>
+            <label class="auth-mode__option">
+              <input type="radio" name="authMode" value="register" />
+              <span>Nieuw gezin</span>
+            </label>
+          </div>
           <div class="field">
             <label for="family-name">Gezinsnaam</label>
             <input
@@ -45,8 +55,21 @@
               maxlength="8"
             />
           </div>
-          <button type="submit" class="button button--primary">Lijst openen</button>
+          <div id="confirm-pin-field" class="field" hidden>
+            <label for="family-pin-confirm">Herhaal pincode</label>
+            <input
+              id="family-pin-confirm"
+              name="pinConfirm"
+              type="password"
+              inputmode="numeric"
+              pattern="[0-9]{4,8}"
+              placeholder="Herhaal pincode"
+              maxlength="8"
+            />
+          </div>
+          <button id="family-submit" type="submit" class="button button--primary">Inloggen</button>
         </form>
+        <p class="auth-help auth-help--small">Legacy lijst: gezinsnaam <strong>legacy</strong>, pincode <strong>0000</strong>.</p>
       </section>
 
       <section id="list-panel" class="panel" hidden>

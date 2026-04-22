@@ -30,7 +30,7 @@ exports.handler = async (event) => {
     const method = event.httpMethod || "GET";
     const path = getApiPath(event.path || "/api/items");
 
-    if (method === "POST" && path === "/session") {
+    if (method === "POST" && path === "/session/register") {
       const body = parseBody(event.body);
       const familyName = sanitize(body.familyName, 80);
       const pin = sanitize(body.pin, 20);
@@ -49,23 +49,53 @@ exports.handler = async (event) => {
       );
       const pinHash = hashPin(pin, familyId);
 
-      if (existing.rowCount === 0) {
-        await pool.query(
-          "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4)",
-          [familyId, familyName, pinHash, Date.now()]
-        );
-        return json(200, { familyId, familyName, created: true });
+      if (existing.rowCount > 0) {
+        return json(409, { error: "Dit gezin bestaat al. Kies Inloggen." });
       }
 
-      const family = existing.rows[0];
-      if (family.pin_hash !== pinHash) {
-        return json(401, { error: "Onjuiste pincode" });
-      }
-
-      return json(200, { familyId: family.id, familyName: family.name, created: false });
+      await pool.query(
+        "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4)",
+        [familyId, familyName, pinHash, Date.now()]
+      );
+      const token = await createSession(familyId);
+      return json(200, { familyId, familyName, token, created: true });
     }
 
-    const auth = await authenticateFamily(event.headers || {});
+    if (method === "POST" && path === "/session/login") {
+      const body = parseBody(event.body);
+      const familyName = sanitize(body.familyName, 80);
+      const pin = sanitize(body.pin, 20);
+      const familyId = normalizeFamilyId(familyName);
+
+      if (!familyId || !isValidPin(pin)) {
+        return json(400, { error: "Vul een geldige gezinsnaam en pincode in." });
+      }
+
+      const existing = await pool.query(
+        "SELECT id, name, pin_hash FROM shopping_families WHERE id = $1 LIMIT 1",
+        [familyId]
+      );
+      if (existing.rowCount === 0) {
+        return json(401, { error: "Onbekend gezin of onjuiste pincode" });
+      }
+      const family = existing.rows[0];
+      if (!verifyPin(pin, family.id, family.pin_hash)) {
+        return json(401, { error: "Onbekend gezin of onjuiste pincode" });
+      }
+
+      const token = await createSession(family.id);
+      return json(200, { familyId: family.id, familyName: family.name, token, created: false });
+    }
+
+    if (method === "POST" && path === "/session/restore") {
+      const auth = await authenticateSession(event.headers || {});
+      if (!auth.ok) {
+        return json(auth.statusCode, { error: auth.error });
+      }
+      return json(200, { familyId: auth.familyId, familyName: auth.familyName });
+    }
+
+    const auth = await authenticateSession(event.headers || {});
     if (!auth.ok) {
       return json(auth.statusCode, { error: auth.error });
     }
@@ -167,6 +197,15 @@ async function ensureSchema() {
       created_at BIGINT NOT NULL
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopping_sessions (
+      token_hash TEXT PRIMARY KEY,
+      family_id TEXT NOT NULL,
+      expires_at BIGINT NOT NULL,
+      created_at BIGINT NOT NULL,
+      last_used_at BIGINT NOT NULL
+    )
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS shopping_items (
@@ -189,6 +228,8 @@ async function ensureSchema() {
     "INSERT INTO shopping_families (id, name, pin_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
     ["legacy", "Bestaand gezin", hashPin("0000", "legacy"), Date.now()]
   );
+  await pool.query("CREATE INDEX IF NOT EXISTS shopping_sessions_family_idx ON shopping_sessions (family_id)");
+  await pool.query("DELETE FROM shopping_sessions WHERE expires_at < $1", [Date.now()]);
 
   schemaReady = true;
 }
@@ -213,27 +254,38 @@ function getApiPath(rawPath) {
   return withoutPrefix || "/items";
 }
 
-async function authenticateFamily(headers) {
-  const familyId = sanitize(headers["x-family-id"] || headers["X-Family-Id"], 80);
-  const pin = sanitize(headers["x-family-pin"] || headers["X-Family-Pin"], 20);
-  if (!familyId || !pin) {
-    return { ok: false, statusCode: 401, error: "Geen geldige gezinstoegang" };
+async function authenticateSession(headers) {
+  const authHeader = String(headers.authorization || headers.Authorization || "");
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : "";
+  if (!token) {
+    return { ok: false, statusCode: 401, error: "Geen geldige sessie" };
   }
 
+  const tokenHash = hashSessionToken(token);
+  const now = Date.now();
   const result = await pool.query(
-    "SELECT id, pin_hash FROM shopping_families WHERE id = $1 LIMIT 1",
-    [familyId]
+    `SELECT s.family_id, f.name, s.expires_at
+     FROM shopping_sessions s
+     INNER JOIN shopping_families f ON f.id = s.family_id
+     WHERE s.token_hash = $1
+     LIMIT 1`,
+    [tokenHash]
   );
   if (result.rowCount === 0) {
-    return { ok: false, statusCode: 401, error: "Onbekend gezin" };
+    return { ok: false, statusCode: 401, error: "Sessie verlopen, log opnieuw in." };
   }
 
-  const family = result.rows[0];
-  if (family.pin_hash !== hashPin(pin, family.id)) {
-    return { ok: false, statusCode: 401, error: "Onjuiste pincode" };
+  const session = result.rows[0];
+  if (Number(session.expires_at) < now) {
+    await pool.query("DELETE FROM shopping_sessions WHERE token_hash = $1", [tokenHash]);
+    return { ok: false, statusCode: 401, error: "Sessie verlopen, log opnieuw in." };
   }
 
-  return { ok: true, familyId: family.id };
+  await pool.query("UPDATE shopping_sessions SET last_used_at = $1 WHERE token_hash = $2", [
+    now,
+    tokenHash,
+  ]);
+  return { ok: true, familyId: session.family_id, familyName: session.name };
 }
 
 function normalizeFamilyId(input) {
@@ -252,6 +304,30 @@ function isValidPin(pin) {
 
 function hashPin(pin, familyId) {
   return crypto.scryptSync(pin, familyId, 32).toString("hex");
+}
+
+function verifyPin(pin, familyId, expectedHash) {
+  const incoming = Buffer.from(hashPin(pin, familyId), "hex");
+  const expected = Buffer.from(String(expectedHash || ""), "hex");
+  if (incoming.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(incoming, expected);
+}
+
+async function createSession(familyId) {
+  const token = crypto.randomBytes(48).toString("hex");
+  const now = Date.now();
+  const expiresAt = now + 1000 * 60 * 60 * 24 * 90;
+  await pool.query(
+    "INSERT INTO shopping_sessions (token_hash, family_id, expires_at, created_at, last_used_at) VALUES ($1, $2, $3, $4, $5)",
+    [hashSessionToken(token), familyId, expiresAt, now, now]
+  );
+  return token;
+}
+
+function hashSessionToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
 }
 
 function toClientItem(row) {

@@ -1,5 +1,7 @@
 const form = document.querySelector("#add-item-form");
 const familyForm = document.querySelector("#family-form");
+const confirmPinField = document.querySelector("#confirm-pin-field");
+const familySubmitButton = document.querySelector("#family-submit");
 const list = document.querySelector("#shopping-list");
 const emptyState = document.querySelector("#empty-state");
 const template = document.querySelector("#item-template");
@@ -24,25 +26,37 @@ let lastSyncedAt = null;
 let syncInProgress = false;
 
 bootstrap();
+bindAuthModeUi();
 
 familyForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(familyForm);
+  const authMode = String(formData.get("authMode") || "login");
   const familyName = String(formData.get("familyName") || "").trim();
   const pin = String(formData.get("pin") || "").trim();
+  const pinConfirm = String(formData.get("pinConfirm") || "").trim();
 
   if (!familyName || !/^\d{4,8}$/.test(pin)) {
     setSyncError("Vul een gezinsnaam en pincode van 4-8 cijfers in.");
     return;
   }
+  if (authMode === "register" && pin !== pinConfirm) {
+    setSyncError("De herhaalde pincode komt niet overeen.");
+    return;
+  }
 
   try {
-    const result = await request("/api/session", {
+    const endpoint = authMode === "register" ? "/api/session/register" : "/api/session/login";
+    const result = await request(endpoint, {
       method: "POST",
       body: JSON.stringify({ familyName, pin }),
       includeAuth: false,
     });
-    session = { familyId: result.familyId, familyName: result.familyName, pin };
+    session = {
+      familyId: result.familyId,
+      familyName: result.familyName,
+      token: result.token,
+    };
     saveSession();
     resetStateForActiveFamily();
     showApp();
@@ -162,16 +176,7 @@ switchFamilyButton.addEventListener("click", () => {
   if (!confirmed) {
     return;
   }
-  session = null;
-  localStorage.removeItem(SESSION_STORAGE_KEY);
-  stopAutoRefresh();
-  items = [];
-  pendingOps = [];
-  lastSyncedAt = null;
-  syncError = "";
-  showAuth();
-  renderItems();
-  renderSyncStatus();
+  clearSessionAndReturnToAuth();
 });
 
 async function bootstrap() {
@@ -206,10 +211,8 @@ async function bootstrap() {
   renderSyncStatus();
 
   try {
-    await request("/api/session", {
+    await request("/api/session/restore", {
       method: "POST",
-      body: JSON.stringify({ familyName: session.familyName, pin: session.pin }),
-      includeAuth: false,
     });
     await refreshItems();
     startAutoRefresh();
@@ -363,6 +366,9 @@ async function request(url, options = {}) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
+    if (response.status === 401 && options.includeAuth !== false) {
+      clearSessionAndReturnToAuth();
+    }
     const message =
       payload && typeof payload.error === "string" ? payload.error : `Serverfout (${response.status})`;
     throw new Error(message);
@@ -375,8 +381,7 @@ function getAuthHeaders() {
     return {};
   }
   return {
-    "X-Family-Id": session.familyId,
-    "X-Family-Pin": session.pin,
+    Authorization: `Bearer ${session.token}`,
   };
 }
 
@@ -456,7 +461,14 @@ function saveSession() {
 }
 
 function loadSession() {
-  return parseStoredJson(SESSION_STORAGE_KEY, null);
+  const loaded = parseStoredJson(SESSION_STORAGE_KEY, null);
+  if (!loaded || typeof loaded !== "object") {
+    return null;
+  }
+  if (!loaded.familyId || !loaded.familyName || !loaded.token) {
+    return null;
+  }
+  return loaded;
 }
 
 function persistState() {
@@ -507,4 +519,33 @@ function createId() {
     return window.crypto.randomUUID();
   }
   return `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function bindAuthModeUi() {
+  familyForm.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.name !== "authMode") {
+      return;
+    }
+    updateAuthModeUi(target.value === "register");
+  });
+  updateAuthModeUi(false);
+}
+
+function updateAuthModeUi(isRegisterMode) {
+  confirmPinField.hidden = !isRegisterMode;
+  familySubmitButton.textContent = isRegisterMode ? "Gezin aanmaken" : "Inloggen";
+}
+
+function clearSessionAndReturnToAuth() {
+  session = null;
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+  stopAutoRefresh();
+  items = [];
+  pendingOps = [];
+  lastSyncedAt = null;
+  syncError = "";
+  showAuth();
+  renderItems();
+  renderSyncStatus();
 }
