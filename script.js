@@ -7,12 +7,20 @@ const clearAllButton = document.querySelector("#clear-all");
 const syncStatus = document.querySelector("#sync-status");
 const apiBaseMeta = document.querySelector('meta[name="api-base"]');
 const API_BASE = (apiBaseMeta?.content || "").trim().replace(/\/+$/, "");
+const ITEMS_STORAGE_KEY = "shopping-items-cache-v1";
+const PENDING_OPS_STORAGE_KEY = "shopping-pending-ops-v1";
+const LAST_SYNC_STORAGE_KEY = "shopping-last-sync-v1";
 
-let items = [];
+let items = loadItemsFromStorage();
+let pendingOps = loadPendingOpsFromStorage();
 let refreshTimerId = null;
 let syncError = "";
+let lastSyncedAt = loadLastSyncedAtFromStorage();
+let syncInProgress = false;
 
 bootstrap();
+renderItems();
+renderSyncStatus();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -26,17 +34,32 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  try {
-    await request("/api/items", {
-      method: "POST",
-      body: JSON.stringify({ name, quantity, addedBy }),
-    });
-    await refreshItems();
-    form.reset();
-    document.querySelector("#item-name")?.focus();
-  } catch (error) {
-    setSyncError(error);
-  }
+  const newItem = {
+    id: createId(),
+    name,
+    quantity,
+    addedBy,
+    checked: false,
+    createdAt: Date.now(),
+  };
+
+  items = [newItem, ...items];
+  queueOperation({
+    type: "add",
+    item: {
+      id: newItem.id,
+      name: newItem.name,
+      quantity: newItem.quantity,
+      addedBy: newItem.addedBy,
+    },
+  });
+  persistState();
+  renderItems();
+  renderSyncStatus();
+
+  form.reset();
+  document.querySelector("#item-name")?.focus();
+  triggerSyncInBackground();
 });
 
 list.addEventListener("change", async (event) => {
@@ -55,15 +78,12 @@ list.addEventListener("change", async (event) => {
   }
 
   const itemId = itemElement.dataset.itemId;
-  try {
-    await request(`/api/items/${itemId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ checked: checkbox.checked }),
-    });
-    await refreshItems();
-  } catch (error) {
-    setSyncError(error);
-  }
+  items = items.map((item) => (item.id === itemId ? { ...item, checked: checkbox.checked } : item));
+  queueOperation({ type: "setChecked", id: itemId, checked: checkbox.checked });
+  persistState();
+  renderItems();
+  renderSyncStatus();
+  triggerSyncInBackground();
 });
 
 list.addEventListener("click", async (event) => {
@@ -82,21 +102,21 @@ list.addEventListener("click", async (event) => {
   }
 
   const itemId = itemElement.dataset.itemId;
-  try {
-    await request(`/api/items/${itemId}`, { method: "DELETE" });
-    await refreshItems();
-  } catch (error) {
-    setSyncError(error);
-  }
+  items = items.filter((item) => item.id !== itemId);
+  queueOperation({ type: "delete", id: itemId });
+  persistState();
+  renderItems();
+  renderSyncStatus();
+  triggerSyncInBackground();
 });
 
 clearCheckedButton.addEventListener("click", async () => {
-  try {
-    await request("/api/items/checked", { method: "DELETE" });
-    await refreshItems();
-  } catch (error) {
-    setSyncError(error);
-  }
+  items = items.filter((item) => !item.checked);
+  queueOperation({ type: "clearChecked" });
+  persistState();
+  renderItems();
+  renderSyncStatus();
+  triggerSyncInBackground();
 });
 
 clearAllButton.addEventListener("click", async () => {
@@ -109,12 +129,12 @@ clearAllButton.addEventListener("click", async () => {
     return;
   }
 
-  try {
-    await request("/api/items", { method: "DELETE" });
-    await refreshItems();
-  } catch (error) {
-    setSyncError(error);
-  }
+  items = [];
+  queueOperation({ type: "clearAll" });
+  persistState();
+  renderItems();
+  renderSyncStatus();
+  triggerSyncInBackground();
 });
 
 async function bootstrap() {
@@ -130,6 +150,22 @@ async function bootstrap() {
     startAutoRefresh();
   } catch (error) {
     setSyncError(error);
+  }
+
+  window.addEventListener("online", () => {
+    syncError = "";
+    renderSyncStatus();
+    triggerSyncInBackground();
+  });
+  window.addEventListener("offline", () => {
+    syncError = "";
+    renderSyncStatus();
+  });
+
+  if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
+    navigator.serviceWorker.register("./sw.js").catch(() => {
+      // Service worker is optional; app keeps working without it.
+    });
   }
 }
 
@@ -148,9 +184,12 @@ function startAutoRefresh() {
 }
 
 async function refreshItems() {
+  await flushPendingOps();
   const result = await request("/api/items");
   items = Array.isArray(result.items) ? result.items : [];
   syncError = "";
+  lastSyncedAt = Date.now();
+  persistState();
   renderItems();
   renderSyncStatus();
 }
@@ -205,11 +244,31 @@ function renderSyncStatus() {
   if (syncError) {
     syncStatus.textContent = syncError;
     syncStatus.classList.add("sync-status--error");
+    syncStatus.classList.remove("sync-status--warning");
     return;
   }
 
-  syncStatus.textContent = `Synchronisatie actief • Laatst bijgewerkt om ${new Date().toLocaleTimeString("nl-NL")}`;
+  const lastSyncText = lastSyncedAt
+    ? `Laatst gesynchroniseerd om ${new Date(lastSyncedAt).toLocaleTimeString("nl-NL")}`
+    : "Nog niet gesynchroniseerd";
+
+  if (!navigator.onLine) {
+    syncStatus.textContent = `Geen internetverbinding • Je werkt met lokaal opgeslagen gegevens (${lastSyncText}). Gegevens kunnen verouderd zijn.`;
+    syncStatus.classList.add("sync-status--warning");
+    syncStatus.classList.remove("sync-status--error");
+    return;
+  }
+
+  if (pendingOps.length > 0) {
+    syncStatus.textContent = `Verbinding actief • ${pendingOps.length} wijziging(en) wachten op synchronisatie (${lastSyncText}).`;
+    syncStatus.classList.add("sync-status--warning");
+    syncStatus.classList.remove("sync-status--error");
+    return;
+  }
+
+  syncStatus.textContent = `Synchronisatie actief • ${lastSyncText}`;
   syncStatus.classList.remove("sync-status--error");
+  syncStatus.classList.remove("sync-status--warning");
 }
 
 function setSyncError(error) {
@@ -229,9 +288,7 @@ async function request(url, options = {}) {
       },
     });
   } catch {
-    throw new Error(
-      "Kan de server niet bereiken. Controleer of de backend draait en dat api-base klopt."
-    );
+    throw new Error("Geen verbinding met de server.");
   }
 
   const payload = await response.json().catch(() => null);
@@ -249,4 +306,121 @@ async function request(url, options = {}) {
   }
 
   return payload ?? {};
+}
+
+function queueOperation(operation) {
+  pendingOps.push(operation);
+}
+
+async function triggerSyncInBackground() {
+  if (!navigator.onLine) {
+    return;
+  }
+  try {
+    await refreshItems();
+  } catch (error) {
+    setSyncError(error);
+  }
+}
+
+async function flushPendingOps() {
+  if (!navigator.onLine || pendingOps.length === 0 || syncInProgress) {
+    return;
+  }
+
+  syncInProgress = true;
+  try {
+    const remaining = [];
+    for (let index = 0; index < pendingOps.length; index += 1) {
+      const operation = pendingOps[index];
+      try {
+        await sendOperation(operation);
+      } catch (error) {
+        if (isNetworkError(error)) {
+          remaining.push(operation, ...pendingOps.slice(index + 1));
+          throw error;
+        }
+      }
+    }
+    pendingOps = remaining;
+    persistState();
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+async function sendOperation(operation) {
+  if (operation.type === "add") {
+    await request("/api/items", {
+      method: "POST",
+      body: JSON.stringify(operation.item),
+    });
+    return;
+  }
+  if (operation.type === "setChecked") {
+    await request(`/api/items/${operation.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ checked: operation.checked }),
+    });
+    return;
+  }
+  if (operation.type === "delete") {
+    await request(`/api/items/${operation.id}`, { method: "DELETE" });
+    return;
+  }
+  if (operation.type === "clearChecked") {
+    await request("/api/items/checked", { method: "DELETE" });
+    return;
+  }
+  if (operation.type === "clearAll") {
+    await request("/api/items", { method: "DELETE" });
+  }
+}
+
+function isNetworkError(error) {
+  return error instanceof Error && error.message === "Geen verbinding met de server.";
+}
+
+function persistState() {
+  localStorage.setItem(ITEMS_STORAGE_KEY, JSON.stringify(items));
+  localStorage.setItem(PENDING_OPS_STORAGE_KEY, JSON.stringify(pendingOps));
+  if (lastSyncedAt) {
+    localStorage.setItem(LAST_SYNC_STORAGE_KEY, String(lastSyncedAt));
+  }
+}
+
+function loadItemsFromStorage() {
+  return parseStoredJson(ITEMS_STORAGE_KEY, []);
+}
+
+function loadPendingOpsFromStorage() {
+  return parseStoredJson(PENDING_OPS_STORAGE_KEY, []);
+}
+
+function loadLastSyncedAtFromStorage() {
+  const value = localStorage.getItem(LAST_SYNC_STORAGE_KEY);
+  if (!value) {
+    return null;
+  }
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function parseStoredJson(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (!raw) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function createId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

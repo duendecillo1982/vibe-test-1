@@ -48,6 +48,10 @@ body {
   color: var(--danger);
 }
 
+.sync-status--warning {
+  color: #975a16;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);

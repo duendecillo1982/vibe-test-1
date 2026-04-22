@@ -41,6 +41,7 @@ exports.handler = async (event) => {
 
     if (method === "POST" && path === "/items") {
       const body = parseBody(event.body);
+      const providedId = sanitize(body.id, 120);
       const name = sanitize(body.name, 80);
       const quantity = sanitize(body.quantity, 30);
       const addedBy = sanitize(body.addedBy, 40);
@@ -50,8 +51,8 @@ exports.handler = async (event) => {
       }
 
       await pool.query(
-        "INSERT INTO shopping_items (id, name, quantity, added_by, checked, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-        [crypto.randomUUID(), name, quantity, addedBy, false, Date.now()]
+        "INSERT INTO shopping_items (id, name, quantity, added_by, checked, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
+        [providedId || crypto.randomUUID(), name, quantity, addedBy, false, Date.now()]
       );
       return json(201, { ok: true });
     }
